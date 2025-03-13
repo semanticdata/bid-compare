@@ -64,24 +64,18 @@ def load_bid_data():
             if old_col in df.columns:
                 if "Extension" in old_col:
                     extension_cols.append(new_col)
-                    df[new_col] = (
-                        df[old_col]
-                        .astype(str)
-                        .str.replace("$", "", regex=False)
-                        .str.replace(",", "", regex=False)
-                        .str.replace(" ", "", regex=False)
-                    )
-                    df[new_col] = pd.to_numeric(df[new_col], errors="coerce").fillna(0)
+                    # Convert Extension columns to numeric values
+                    df[new_col] = pd.to_numeric(
+                        df[old_col].astype(str).replace("[$,]", "", regex=True),
+                        errors="coerce",
+                    ).fillna(0)
                 elif "Unit Price" in old_col:
                     unit_price_cols.append(new_col)
-                    df[new_col] = (
-                        df[old_col]
-                        .astype(str)
-                        .str.replace("$", "", regex=False)
-                        .str.replace(",", "", regex=False)
-                        .str.replace(" ", "", regex=False)
-                    )
-                    df[new_col] = pd.to_numeric(df[new_col], errors="coerce").fillna(0)
+                    # Convert Unit Price columns to numeric values
+                    df[new_col] = pd.to_numeric(
+                        df[old_col].astype(str).replace("[$,]", "", regex=True),
+                        errors="coerce",
+                    ).fillna(0)
 
         # Store the column lists for later use
         df.attrs["extension_cols"] = extension_cols
@@ -100,21 +94,17 @@ def load_bid_data():
 
 def get_total_bids(df):
     totals = {}
-
-    # Use the stored extension columns
     for col in df.attrs.get("extension_cols", []):
         try:
-            # Sum only numeric values
-            values = df[col].replace([np.inf, -np.inf], np.nan).dropna()
+            # Sum only the valid numeric values, excluding zeros
+            values = df[col][df[col] > 0]
             if not values.empty:
-                total = values.sum()
+                total = values.iloc[0]  # Take the first non-zero value (total bid)
                 if total > 0:
                     totals[col] = total
         except Exception as e:
             print(f"Error calculating total for {col}: {str(e)}")
             continue
-
-    # print("Calculated totals:", totals) # Debug output
     return pd.Series(totals)
 
 
