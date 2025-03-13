@@ -135,7 +135,12 @@ def main():
         st.pyplot(fig)
 
         st.header("Bid Comparison Table")
-        st.dataframe(totals.sort_values())
+        # Format totals with currency and sort
+        formatted_totals = totals.sort_values().map(lambda x: f"${x:,.2f}")
+        # Create a dataframe with custom index name
+        comparison_df = pd.DataFrame(formatted_totals, columns=["Bid Amount"])
+        comparison_df.index.name = "Contractor"
+        st.dataframe(comparison_df)
 
         st.header("Individual Line Item Analysis")
         selected_item = st.selectbox(
