@@ -136,6 +136,52 @@ def get_section_totals(df):
     return totals_by_section
 
 
+def get_line_items_by_section(df):
+    """Group line items by section with their unit prices."""
+    line_items = {}
+    
+    # Get unique sections
+    sections = df['Section'].unique()
+    
+    for section in sections:
+        if pd.isna(section):
+            continue
+            
+        # Get items for this section
+        section_df = df[df['Section'] == section]
+        
+        # Get unique items in this section
+        items = {}
+        for _, row in section_df.iterrows():
+            if pd.isna(row['Item Description']):
+                continue
+                
+            item_name = f"{row['Item Description']} (Line {row['Line Item']})"
+            unit_prices = {}
+            
+            # Get unit prices for each contractor
+            for col in df.attrs.get("unit_price_cols", []):
+                try:
+                    price_str = row[col]
+                    if pd.notna(price_str) and str(price_str).strip() != '':
+                        # Convert string value to float, handling currency format
+                        price = float(str(price_str).replace('$', '').replace(',', ''))
+                        if price != 0:
+                            contractor = CONTRACTOR_MAPPING.get(col, col)
+                            unit_prices[contractor] = price
+                except Exception as e:
+                    print(f"Error processing price for {item_name}: {str(e)}")
+                    continue
+            
+            if unit_prices:
+                items[item_name] = unit_prices
+        
+        if items:
+            line_items[section] = items
+    
+    return line_items
+
+
 def main():
     st.title("Bid Analysis Dashboard")
 
@@ -193,38 +239,77 @@ def main():
         st.dataframe(comparison_df)
 
         # st.header("Section Analysis")
-        # for section, subtotals in section_totals.items():
-        #     st.subheader(section)
-        #     if not subtotals.empty:
-        #         # Format subtotals with currency and sort
-        #         formatted_subtotals = subtotals.sort_values().map(lambda x: f"${x:,.2f}")
-        #         # Create a dataframe with custom index name
-        #         section_df = pd.DataFrame(formatted_subtotals, columns=["Bid Amount"])
-        #         section_df.index.name = "Contractor"
+        for section, subtotals in section_totals.items():
+            # st.subheader(section)
+            if not subtotals.empty:
+                # Format subtotals with currency and sort
+                formatted_subtotals = subtotals.sort_values().map(lambda x: f"${x:,.2f}")
+                # Create a dataframe with custom index name
+                section_df = pd.DataFrame(formatted_subtotals, columns=["Bid Amount"])
+                section_df.index.name = "Contractor"
         #         st.dataframe(section_df)
 
         st.header("Individual Line Item Analysis")
-        selected_item = st.selectbox(
-            "Select Line Item:", df["Item Description"].unique()
+        
+        # Get items grouped by section
+        line_items = get_line_items_by_section(df)
+        
+        # Create section selector
+        selected_section = st.selectbox(
+            "Select Section:",
+            options=list(line_items.keys())
         )
-
-        item_df = df[df["Item Description"] == selected_item]
-        if not item_df.empty:
-            fig2, ax2 = plt.subplots(figsize=(12, 6))
-            unit_price_cols = df.attrs.get("unit_price_cols", [])
-            prices = []
-            names = []
-            for contractor in unit_price_cols:
-                price = pd.to_numeric(item_df[contractor].iloc[0], errors="coerce")
-                if pd.notna(price) and price > 0:  # Only show valid non-zero prices
-                    prices.append(price)
-                    names.append(contractor)
-
-            plt.bar(names, prices)
-            plt.xticks(rotation=45, ha="right")
-            plt.ylabel("Unit Price ($)")
-            plt.title(f"Unit Prices for {selected_item}")
-            st.pyplot(fig2)
+        
+        if selected_section:
+            # Create item selector for the selected section
+            selected_item = st.selectbox(
+                "Select Item:",
+                options=list(line_items[selected_section].keys())
+            )
+            
+            if selected_item:
+                # Get unit prices for selected item
+                unit_prices = line_items[selected_section][selected_item]
+                
+                # Create bar chart
+                fig2, ax2 = plt.subplots(figsize=(12, 6))
+                
+                contractors = list(unit_prices.keys())
+                prices = [unit_prices[c] for c in contractors]
+                
+                plt.bar(contractors, prices)
+                plt.xticks(rotation=45, ha='right')
+                plt.ylabel('Unit Price ($)')
+                plt.title(f'Unit Prices for {selected_item}\nin {selected_section}')
+                
+                # Add value labels on top of each bar
+                for i, price in enumerate(prices):
+                    plt.text(i, price, f'${price:,.2f}', 
+                            ha='center', va='bottom')
+                
+                st.pyplot(fig2)
+                
+                # Show prices in a table format
+                price_df = pd.DataFrame({
+                    'Contractor': contractors,
+                    'Unit Price': [f'${p:,.2f}' for p in prices]
+                }).set_index('Contractor')
+                
+                # st.dataframe(price_df)
+                
+                # Show item details if available
+                item_details = df[
+                    (df['Section'] == selected_section) & 
+                    (df['Item Description'].str.strip() == selected_item.split(' (Line ')[0].strip())
+                ].iloc[0]
+                
+                # st.subheader("Item Details")
+                details = {
+                    'Item Code': item_details['Item Code'],
+                    'Unit of Measure': item_details['UofM'],
+                    'Quantity': item_details['Quantity']
+                }
+                # st.write(details)
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
