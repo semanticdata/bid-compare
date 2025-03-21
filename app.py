@@ -56,34 +56,25 @@ def load_bid_data():
         # Clean up the data
         df = df.dropna(how="all")
 
-        # Convert price columns to numeric and rename them properly
-        extension_cols = []
-        unit_price_cols = []
+        # Keep original columns for value extraction
+        original_cols = df.columns.tolist()
+        
+        # Add section identification before converting columns
+        df['Section'] = None
+        current_section = None
+        for idx, row in df.iterrows():
+            if isinstance(row['Section Title'], str) and (
+                'Mill and Overlay' in row['Section Title'] or 
+                'section - required' in row['Section Title']
+            ):
+                current_section = row['Section Title']
+            df.at[idx, 'Section'] = current_section
 
-        for old_col, new_col in CONTRACTOR_MAPPING.items():
-            if old_col in df.columns:
-                if "Extension" in old_col:
-                    extension_cols.append(new_col)
-                    # Convert Extension columns to numeric values
-                    df[new_col] = pd.to_numeric(
-                        df[old_col].astype(str).replace("[$,]", "", regex=True),
-                        errors="coerce",
-                    ).fillna(0)
-                elif "Unit Price" in old_col:
-                    unit_price_cols.append(new_col)
-                    # Convert Unit Price columns to numeric values
-                    df[new_col] = pd.to_numeric(
-                        df[old_col].astype(str).replace("[$,]", "", regex=True),
-                        errors="coerce",
-                    ).fillna(0)
-
-        # Store the column lists for later use
-        df.attrs["extension_cols"] = extension_cols
-        df.attrs["unit_price_cols"] = unit_price_cols
-
-        # print("DataFrame shape:", df.shape) # Debug output
-        # print("Extension columns:", extension_cols) # Debug output
-        # print("Unit Price columns:", unit_price_cols) # Debug output
+        # Store original columns for later reference
+        df.attrs["original_cols"] = original_cols
+        df.attrs["extension_cols"] = [col for col in original_cols if "Extension" in col]
+        df.attrs["unit_price_cols"] = [col for col in original_cols if "Unit Price" in col]
+        
         return df
 
     except Exception as e:
@@ -93,19 +84,56 @@ def load_bid_data():
 
 
 def get_total_bids(df):
+    base_bid_row = df[df['Section Title'].str.contains('Base Bid Total:', na=False)]
+    if base_bid_row.empty:
+        return pd.Series()
+    
     totals = {}
     for col in df.attrs.get("extension_cols", []):
         try:
-            # Sum only the valid numeric values, excluding zeros
-            values = df[col][df[col] > 0]
-            if not values.empty:
-                total = values.iloc[0]  # Take the first non-zero value (total bid)
-                if total > 0:
-                    totals[col] = total
+            value_str = base_bid_row[col].iloc[0]
+            if pd.notna(value_str) and str(value_str).strip() != '':
+                # Convert string value to float, handling currency format
+                value = float(str(value_str).replace('$', '').replace(',', ''))
+                if value != 0:
+                    contractor = CONTRACTOR_MAPPING.get(col, col)
+                    totals[contractor] = value
         except Exception as e:
-            print(f"Error calculating total for {col}: {str(e)}")
+            print(f"Error processing column {col}: {str(e)}")
             continue
+    
     return pd.Series(totals)
+
+
+def get_section_totals(df):
+    section_names = [
+        "S.3887 2025 Mill and Overlay",
+        "Alternate 1 section - required",
+        "Alternate 2 section - required"
+    ]
+    
+    totals_by_section = {}
+    for section in section_names:
+        section_row = df[df['Section Title'].str.strip() == section]
+        if not section_row.empty:
+            section_totals = {}
+            for col in df.attrs.get("extension_cols", []):
+                try:
+                    value_str = section_row[col].iloc[0]
+                    if pd.notna(value_str) and str(value_str).strip() != '':
+                        # Convert string value to float, handling currency format
+                        value = float(str(value_str).replace('$', '').replace(',', ''))
+                        if value != 0:
+                            contractor = CONTRACTOR_MAPPING.get(col, col)
+                            section_totals[contractor] = value
+                except Exception as e:
+                    print(f"Error processing {section} column {col}: {str(e)}")
+                    continue
+            
+            if section_totals:
+                totals_by_section[section] = pd.Series(section_totals)
+    
+    return totals_by_section
 
 
 def main():
@@ -113,9 +141,18 @@ def main():
 
     try:
         df = load_bid_data()
-        # print("Loaded DataFrame:", df.head())  # Debug output
-
+        print("\nDataFrame columns:", df.columns.tolist())  # Debug print
+        print("Extension columns:", df.attrs.get("extension_cols", []))  # Debug print
+        
         totals = get_total_bids(df)
+        print("\nTotal bids:", totals)  # Debug print
+        
+        section_totals = get_section_totals(df)
+        print("\nSection totals:", section_totals)  # Debug print
+
+        if totals.empty:
+            st.warning("No bid totals found in the data")
+            return
 
         st.header("Total Bid Amounts")
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -131,6 +168,17 @@ def main():
         comparison_df = pd.DataFrame(formatted_totals, columns=["Bid Amount"])
         comparison_df.index.name = "Contractor"
         st.dataframe(comparison_df)
+
+        st.header("Section Analysis")
+        for section, subtotals in section_totals.items():
+            st.subheader(section)
+            if not subtotals.empty:
+                # Format subtotals with currency and sort
+                formatted_subtotals = subtotals.sort_values().map(lambda x: f"${x:,.2f}")
+                # Create a dataframe with custom index name
+                section_df = pd.DataFrame(formatted_subtotals, columns=["Bid Amount"])
+                section_df.index.name = "Contractor"
+                st.dataframe(section_df)
 
         st.header("Individual Line Item Analysis")
         selected_item = st.selectbox(
@@ -157,6 +205,9 @@ def main():
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
+        print(f"Error details: {str(e)}")  # Debug print
+        import traceback
+        print("Stack trace:", traceback.format_exc())  # Debug print
 
 
 if __name__ == "__main__":
