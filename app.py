@@ -141,18 +141,8 @@ def main():
 
     try:
         df = load_bid_data()
-        print("\nDataFrame columns:", df.columns.tolist())  # Debug print
-        print("Extension columns:", df.attrs.get("extension_cols", []))  # Debug print
-        
         totals = get_total_bids(df)
-        print("\nTotal bids:", totals)  # Debug print
-        
         section_totals = get_section_totals(df)
-        print("\nSection totals:", section_totals)  # Debug print
-
-        if totals.empty:
-            st.warning("No bid totals found in the data")
-            return
 
         st.header("Total Bid Amounts")
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -161,24 +151,57 @@ def main():
         plt.ylabel("Bid Amount ($)")
         st.pyplot(fig)
 
-        st.header("Bid Comparison Table")
-        # Format totals with currency and sort
-        formatted_totals = totals.sort_values().map(lambda x: f"${x:,.2f}")
-        # Create a dataframe with custom index name
-        comparison_df = pd.DataFrame(formatted_totals, columns=["Bid Amount"])
-        comparison_df.index.name = "Contractor"
+        st.header("Comprehensive Bid Comparison")
+        # Create a DataFrame with all sections and totals
+        comparison_data = {}
+        contractors = set()
+        
+        # Collect all contractor names and their bids from each section
+        for section, subtotals in section_totals.items():
+            for contractor, amount in subtotals.items():
+                if contractor not in comparison_data:
+                    comparison_data[contractor] = {}
+                comparison_data[contractor][section] = amount
+                contractors.add(contractor)
+        
+        # Calculate sum of sections for each contractor
+        rows = []
+        for contractor in sorted(contractors):
+            row = {
+                "Contractor": contractor,
+                "S.3887 2025 Mill and Overlay": comparison_data[contractor].get("S.3887 2025 Mill and Overlay", 0),
+                "Alternate 1": comparison_data[contractor].get("Alternate 1 section - required", 0),
+                "Alternate 2": comparison_data[contractor].get("Alternate 2 section - required", 0)
+            }
+            # Calculate total
+            row["Total"] = sum(value for key, value in row.items() if key != "Contractor")
+            rows.append(row)
+        
+        # Create DataFrame and sort by Total
+        comparison_df = pd.DataFrame(rows)
+        comparison_df = comparison_df.sort_values("Total")
+        
+        # Format currency values
+        currency_cols = ["S.3887 2025 Mill and Overlay", "Alternate 1", "Alternate 2", "Total"]
+        for col in currency_cols:
+            comparison_df[col] = comparison_df[col].map(lambda x: f"${x:,.2f}")
+        
+        # Set contractor as index
+        comparison_df.set_index("Contractor", inplace=True)
+        
+        # Display the comprehensive table
         st.dataframe(comparison_df)
 
-        st.header("Section Analysis")
-        for section, subtotals in section_totals.items():
-            st.subheader(section)
-            if not subtotals.empty:
-                # Format subtotals with currency and sort
-                formatted_subtotals = subtotals.sort_values().map(lambda x: f"${x:,.2f}")
-                # Create a dataframe with custom index name
-                section_df = pd.DataFrame(formatted_subtotals, columns=["Bid Amount"])
-                section_df.index.name = "Contractor"
-                st.dataframe(section_df)
+        # st.header("Section Analysis")
+        # for section, subtotals in section_totals.items():
+        #     st.subheader(section)
+        #     if not subtotals.empty:
+        #         # Format subtotals with currency and sort
+        #         formatted_subtotals = subtotals.sort_values().map(lambda x: f"${x:,.2f}")
+        #         # Create a dataframe with custom index name
+        #         section_df = pd.DataFrame(formatted_subtotals, columns=["Bid Amount"])
+        #         section_df.index.name = "Contractor"
+        #         st.dataframe(section_df)
 
         st.header("Individual Line Item Analysis")
         selected_item = st.selectbox(
