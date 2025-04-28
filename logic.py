@@ -200,6 +200,96 @@ def get_section_totals_df(df, contractor_map, section_list, selected_contractors
     return pd.DataFrame(data).T  # sections as rows, contractors as columns
 
 
+def prepare_section_totals_chart_data(
+    df, contractor_map, section_list, selected_contractors, selected_sections
+):
+    """
+    Returns section_totals_df, present_contractors, missing_contractors for the bar chart.
+    """
+    from logic import get_section_totals_df
+
+    section_totals_df = get_section_totals_df(
+        df, contractor_map, section_list, selected_contractors
+    )
+    section_totals_df = section_totals_df.loc[
+        section_totals_df.index.isin(selected_sections)
+    ]
+    present_contractors = [
+        c for c in selected_contractors if c in section_totals_df.columns
+    ]
+    missing_contractors = [
+        c for c in selected_contractors if c not in section_totals_df.columns
+    ]
+    return section_totals_df, present_contractors, missing_contractors
+
+
+def prepare_unit_price_chart_data(
+    df, contractor_map, selected_sections, selected_item, selected_contractors
+):
+    """
+    Returns unit_price_data (list of dicts), unit_df (DataFrame), contractors (list), prices (list) for the unit price bar chart.
+    """
+    line_items_all = get_line_items_by_section(df, contractor_map)
+    unit_price_data = []
+    for section in selected_sections:
+        items = line_items_all.get(section, {})
+        if selected_item in items:
+            for contractor, price in items[selected_item].items():
+                if contractor in selected_contractors:
+                    unit_price_data.append(
+                        {
+                            "Contractor": contractor,
+                            "Section": section,
+                            "Unit Price": price,
+                        }
+                    )
+    if unit_price_data:
+        unit_df = pd.DataFrame(unit_price_data)
+        contractors = unit_df["Contractor"].unique()
+        prices = [
+            unit_df[unit_df["Contractor"] == c]["Unit Price"].iloc[0]
+            if not unit_df[unit_df["Contractor"] == c].empty
+            else 0
+            for c in contractors
+        ]
+    else:
+        unit_df, contractors, prices = None, [], []
+    return unit_price_data, unit_df, contractors, prices
+
+
+def get_comparison_table(section_totals, selected_sections):
+    """
+    Returns a formatted DataFrame for comprehensive bid comparison.
+    """
+    comparison_data = {}
+    contractors = set()
+    all_sections = list(section_totals.keys())
+    for section, subtotals in section_totals.items():
+        for contractor, amount in subtotals.items():
+            if contractor not in comparison_data:
+                comparison_data[contractor] = {}
+            comparison_data[contractor][section] = amount
+            contractors.add(contractor)
+    rows = []
+    for contractor in sorted(contractors):
+        row = {"Contractor": contractor}
+        for section in all_sections:
+            row[section] = comparison_data[contractor].get(section, 0)
+        row["Total"] = sum(row[section] for section in all_sections)
+        rows.append(row)
+    comparison_df = pd.DataFrame(rows)
+    if not comparison_df.empty and "Total" in comparison_df.columns:
+        comparison_df = comparison_df.sort_values("Total")
+    currency_cols = [col for col in all_sections if col in comparison_df.columns]
+    if "Total" in comparison_df.columns:
+        currency_cols.append("Total")
+    for col in currency_cols:
+        comparison_df[col] = comparison_df[col].map(lambda x: f"${x:,.2f}")
+    if "Contractor" in comparison_df.columns:
+        comparison_df.set_index("Contractor", inplace=True)
+    return comparison_df
+
+
 def get_line_items_by_section(df, contractor_map):
     """Group line items by section with their unit prices."""
     line_items = {}

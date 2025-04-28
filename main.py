@@ -16,6 +16,16 @@ def main():
     st.title("Bid Analysis Dashboard")
 
     try:
+        # Get project name from first row, first column of BidWorksheet.csv
+        import csv
+
+        with open("BidWorksheet.csv", "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            first_row = next(reader)
+            project_name = first_row[0] if first_row else "Unknown Project"
+            import re
+
+            project_name = re.sub(r"\s*\([^)]*\)", "", project_name).strip()
         df, contractor_map, section_list, parse_errors = load_bid_data()
         section_totals = get_section_totals(df, contractor_map, section_list)
 
@@ -24,6 +34,8 @@ def main():
             for err in parse_errors:
                 st.text(err)
 
+        # --- SIDEBAR PROJECT NAME ---
+        st.sidebar.header(f"{project_name}")
         # --- SIDEBAR FILTERS ---
         st.sidebar.header("Filters")
         contractor_options = list(contractor_map.keys())
@@ -45,22 +57,19 @@ def main():
         )
 
         # --- MAIN LAYOUT ---
-        st.header("Section Totals Comparison by Contractor")
-        from logic import get_section_totals_df
+        # st.header("Section Totals Comparison by Contractor")
 
-        section_totals_df = get_section_totals_df(
-            df, contractor_map, section_list, selected_contractors
+        from logic import prepare_section_totals_chart_data
+
+        section_totals_df, present_contractors, missing_contractors = (
+            prepare_section_totals_chart_data(
+                df,
+                contractor_map,
+                section_list,
+                selected_contractors,
+                selected_sections,
+            )
         )
-        section_totals_df = section_totals_df.loc[
-            section_totals_df.index.isin(selected_sections)
-        ]
-        # Only use contractors present in the DataFrame columns
-        present_contractors = [
-            c for c in selected_contractors if c in section_totals_df.columns
-        ]
-        missing_contractors = [
-            c for c in selected_contractors if c not in section_totals_df.columns
-        ]
         if missing_contractors:
             st.warning(
                 f"No data for these contractor(s): {', '.join(missing_contractors)}"
@@ -69,10 +78,22 @@ def main():
             fig, ax = plt.subplots(figsize=(15, 8))
             bar_width = 0.8 / max(1, len(present_contractors))
             x = np.arange(len(section_totals_df.index))
+            cmap = plt.colormaps["tab10"]
+            contractor_colors = {
+                contractor: cmap(idx % 10)
+                for idx, contractor in enumerate(present_contractors)
+            }
             for idx, contractor in enumerate(present_contractors):
                 values = section_totals_df[contractor].fillna(0).values
                 positions = x + idx * bar_width
-                plt.bar(positions, values, bar_width, label=contractor, alpha=0.8)
+                plt.bar(
+                    positions,
+                    values,
+                    bar_width,
+                    label=contractor,
+                    alpha=0.8,
+                    color=contractor_colors[contractor],
+                )
                 for i, v in enumerate(values):
                     plt.text(
                         positions[i],
@@ -95,35 +116,46 @@ def main():
             plt.legend()
             plt.tight_layout()
             st.pyplot(fig)
+
+            # --- TOTAL BIDS BAR CHART ---
+            # st.header("Calculated Total Bids by Contractor")
+            # Calculate total bid for each present contractor
+            total_bids = {}
+            for contractor in present_contractors:
+                total_bids[contractor] = section_totals_df[contractor].fillna(0).sum()
+            fig_total, ax_total = plt.subplots(figsize=(8, 5))
+            contractors_list = list(total_bids.keys())
+            totals_list = [total_bids[c] for c in contractors_list]
+            total_colors = [
+                contractor_colors.get(c, "skyblue") for c in contractors_list
+            ]
+            plt.bar(contractors_list, totals_list, color=total_colors, alpha=0.85)
+            plt.ylabel("Total Bid ($)")
+            plt.title("Calculated Total Bids by Contractor")
+            plt.xticks(rotation=45, ha="right")
+            for i, v in enumerate(totals_list):
+                plt.text(i, v, f"${v:,.0f}", ha="center", va="bottom")
+            plt.tight_layout()
+            st.pyplot(fig_total)
         else:
             st.info("No data for selected filters.")
 
         # --- UNIT PRICE BAR CHART FOR SELECTED ITEM ---
         if selected_item:
+            from logic import prepare_unit_price_chart_data
+
             st.header(f"Unit Price Comparison for: {selected_item}")
-            unit_price_data = []
-            for section in selected_sections:
-                items = line_items_all.get(section, {})
-                if selected_item in items:
-                    for contractor, price in items[selected_item].items():
-                        if contractor in selected_contractors:
-                            unit_price_data.append(
-                                {
-                                    "Contractor": contractor,
-                                    "Section": section,
-                                    "Unit Price": price,
-                                }
-                            )
-            if unit_price_data:
-                unit_df = pd.DataFrame(unit_price_data)
+            unit_price_data, unit_df, contractors, prices = (
+                prepare_unit_price_chart_data(
+                    df,
+                    contractor_map,
+                    selected_sections,
+                    selected_item,
+                    selected_contractors,
+                )
+            )
+            if unit_price_data and unit_df is not None:
                 fig2, ax2 = plt.subplots(figsize=(10, 5))
-                contractors = unit_df["Contractor"].unique()
-                prices = [
-                    unit_df[unit_df["Contractor"] == c]["Unit Price"].iloc[0]
-                    if not unit_df[unit_df["Contractor"] == c].empty
-                    else 0
-                    for c in contractors
-                ]
                 plt.bar(contractors, prices)
                 plt.xticks(rotation=45, ha="right")
                 plt.ylabel("Unit Price ($)")
@@ -135,46 +167,10 @@ def main():
                 st.info("No unit price data for selected item and filters.")
 
         st.header("Comprehensive Bid Comparison")
-        # Create a DataFrame with all sections and totals
-        comparison_data = {}
-        contractors = set()
+        from logic import get_comparison_table
 
-        # Use the dynamic section list
-        all_sections = list(section_totals.keys())
-
-        # Collect all contractor names and their bids from each section
-        for section, subtotals in section_totals.items():
-            for contractor, amount in subtotals.items():
-                if contractor not in comparison_data:
-                    comparison_data[contractor] = {}
-                comparison_data[contractor][section] = amount
-                contractors.add(contractor)
-
-        # Calculate sum of sections for each contractor
-        rows = []
-        for contractor in sorted(contractors):
-            row = {"Contractor": contractor}
-            for section in all_sections:
-                row[section] = comparison_data[contractor].get(section, 0)
-            # Calculate total
-            row["Total"] = sum(row[section] for section in all_sections)
-            rows.append(row)
-
-        # Create DataFrame and sort by Total if present
-        comparison_df = pd.DataFrame(rows)
-        if not comparison_df.empty and "Total" in comparison_df.columns:
-            comparison_df = comparison_df.sort_values("Total")
-
-        # Format currency values
-        currency_cols = [col for col in all_sections if col in comparison_df.columns]
-        if "Total" in comparison_df.columns:
-            currency_cols.append("Total")
-        for col in currency_cols:
-            comparison_df[col] = comparison_df[col].map(lambda x: f"${x:,.2f}")
-
-        # Set contractor as index and display only if present
-        if "Contractor" in comparison_df.columns:
-            comparison_df.set_index("Contractor", inplace=True)
+        comparison_df = get_comparison_table(section_totals, selected_sections)
+        if not comparison_df.empty:
             st.dataframe(comparison_df)
         else:
             st.info("No contractor data available for the selected filters.")
