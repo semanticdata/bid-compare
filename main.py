@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import re
 from logic import load_bid_data, get_section_totals, get_line_items_by_section
 
 
@@ -16,26 +17,58 @@ def main():
     st.title("Bid Analysis Dashboard")
 
     try:
-        # Get project name from first row, first column of BidWorksheet.csv
+        import os
         import csv
 
-        with open("BidWorksheet.csv", "r", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            first_row = next(reader)
-            project_name = first_row[0] if first_row else "Unknown Project"
-            import re
-
-            project_name = re.sub(r"\s*\([^)]*\)", "", project_name).strip()
-        df, contractor_map, section_list, parse_errors = load_bid_data()
-        section_totals = get_section_totals(df, contractor_map, section_list)
-
-        if parse_errors:
+        # Find all CSV files in the root directory
+        csv_files = [f for f in os.listdir(".") if f.lower().endswith(".csv")]
+        selected_csvs = st.sidebar.multiselect(
+            "Select Bid CSV File(s) for Year-over-Year Comparison",
+            csv_files,
+            default=sorted(csv_files)[-1:],  # Default to latest file
+        )
+        data_by_year = {}
+        project_names = {}
+        parse_errors_all = []
+        for csv_file in selected_csvs:
+            # Extract year from filename (e.g., 2023_MillandOverlay_BidWorksheet.csv -> 2023)
+            match = re.search(r"(20\d{2})", csv_file)
+            year = match.group(1) if match else csv_file
+            with open(csv_file, "r", encoding="utf-8-sig") as f:
+                reader = csv.reader(f)
+                first_row = next(reader)
+                project_name = first_row[0] if first_row else "Unknown Project"
+                project_name = re.sub(r"\s*\([^)]*\)", "", project_name).strip()
+                project_names[year] = project_name
+            df, contractor_map, section_list, parse_errors = load_bid_data(csv_file)
+            data_by_year[year] = {
+                "df": df,
+                "contractor_map": contractor_map,
+                "section_list": section_list,
+                "section_totals": get_section_totals(df, contractor_map, section_list),
+            }
+            if parse_errors:
+                parse_errors_all.extend([f"{csv_file}: {err}" for err in parse_errors])
+        # Show errors if any
+        if parse_errors_all:
             st.warning("Some data issues were detected:")
-            for err in parse_errors:
+            for err in parse_errors_all:
                 st.text(err)
+        # --- SIDEBAR PROJECT NAME (show all selected) ---
+        st.sidebar.header(
+            ", ".join([project_names[y] for y in sorted(project_names.keys())])
+        )
+        # If no file selected, stop
+        if not selected_csvs:
+            st.info("Please select at least one CSV file.")
+            st.stop()
+        # Use the latest year for default filters
+        latest_year = sorted(data_by_year.keys())[-1]
+        df = data_by_year[latest_year]["df"]
+        contractor_map = data_by_year[latest_year]["contractor_map"]
+        section_list = data_by_year[latest_year]["section_list"]
+        section_totals = data_by_year[latest_year]["section_totals"]
 
-        # --- SIDEBAR PROJECT NAME ---
-        st.sidebar.header(f"{project_name}")
         # --- SIDEBAR FILTERS ---
         st.sidebar.header("Filters")
         contractor_options = list(contractor_map.keys())
@@ -46,17 +79,56 @@ def main():
         selected_sections = st.sidebar.multiselect(
             "Sections", section_options, default=section_options
         )
-
-        # Get all line items for item filter
-        line_items_all = get_line_items_by_section(df, contractor_map)
-        all_items = sorted(
-            {item for sec in selected_sections for item in line_items_all.get(sec, {})}
+        # Get all line items for item filter (returns (line_items, display_map))
+        line_items_all, display_map_all = get_line_items_by_section(df, contractor_map)
+        # Build display-to-unique-key mapping for selected sections
+        display_to_key = {}
+        for sec in selected_sections:
+            if sec in display_map_all:
+                display_to_key.update(display_map_all[sec])
+        all_display_items = sorted(display_to_key.keys())
+        selected_display_item = st.sidebar.selectbox(
+            "Line Item (for Unit Price Chart)", [None] + all_display_items
         )
-        selected_item = st.sidebar.selectbox(
-            "Line Item (for Unit Price Chart)", [None] + all_items
+        selected_item_key = (
+            display_to_key[selected_display_item] if selected_display_item else None
         )
 
         # --- MAIN LAYOUT ---
+        # --- YEAR-OVER-YEAR ANALYSIS ---
+        if len(selected_csvs) > 1:
+            st.header("Year-over-Year Total Bids by Contractor")
+            # Prepare data
+            total_bids_by_year = {}
+            all_contractors = set()
+            for year, d in data_by_year.items():
+                section_totals = d["section_totals"]
+                # Sum all section totals for each contractor
+                total_by_contractor = {}
+                for section, subtotals in section_totals.items():
+                    for contractor, val in subtotals.items():
+                        total_by_contractor[contractor] = (
+                            total_by_contractor.get(contractor, 0) + val
+                        )
+                total_bids_by_year[year] = total_by_contractor
+                all_contractors.update(total_by_contractor.keys())
+            all_contractors = sorted(all_contractors)
+            years = sorted(total_bids_by_year.keys())
+            fig, ax = plt.subplots(figsize=(12, 6))
+            for contractor in all_contractors:
+                yvals = [total_bids_by_year[y].get(contractor, 0) for y in years]
+                ax.plot(years, yvals, marker="o", label=contractor)
+                for i, v in enumerate(yvals):
+                    ax.text(
+                        years[i], v, f"${v:,.0f}", ha="center", va="bottom", fontsize=8
+                    )
+            ax.set_xlabel("Year")
+            ax.set_ylabel("Total Bid ($)")
+            ax.set_title("Total Bids by Contractor (Year-over-Year)")
+            ax.legend()
+            st.pyplot(fig)
+            st.markdown("---")
+        # Existing single-file analysis continues below
         # st.header("Section Totals Comparison by Contractor")
 
         from logic import prepare_section_totals_chart_data
@@ -140,32 +212,6 @@ def main():
         else:
             st.info("No data for selected filters.")
 
-        # --- UNIT PRICE BAR CHART FOR SELECTED ITEM ---
-        if selected_item:
-            from logic import prepare_unit_price_chart_data
-
-            st.header(f"Unit Price Comparison for: {selected_item}")
-            unit_price_data, unit_df, contractors, prices = (
-                prepare_unit_price_chart_data(
-                    df,
-                    contractor_map,
-                    selected_sections,
-                    selected_item,
-                    selected_contractors,
-                )
-            )
-            if unit_price_data and unit_df is not None:
-                fig2, ax2 = plt.subplots(figsize=(10, 5))
-                plt.bar(contractors, prices)
-                plt.xticks(rotation=45, ha="right")
-                plt.ylabel("Unit Price ($)")
-                plt.title(f"Unit Prices for {selected_item}")
-                for i, price in enumerate(prices):
-                    plt.text(i, price, f"${price:,.2f}", ha="center", va="bottom")
-                st.pyplot(fig2)
-            else:
-                st.info("No unit price data for selected item and filters.")
-
         st.header("Comprehensive Bid Comparison")
         from logic import get_comparison_table
 
@@ -190,40 +236,30 @@ def main():
 
         st.header("Individual Line Item Analysis")
 
-        # Get items grouped by section
-        line_items = get_line_items_by_section(df, contractor_map)
-
-        # Create section selector
-        selected_section = st.selectbox(
-            "Select Section:", options=list(line_items.keys())
-        )
-
-        if selected_section:
-            # Create item selector for the selected section
-            selected_item = st.selectbox(
-                "Select Item:", options=list(line_items[selected_section].keys())
-            )
-
-            if selected_item:
-                # Get unit prices for selected item
-                unit_prices = line_items[selected_section][selected_item]
-
-                # Create bar chart
+        # Use sidebar filters for section and item
+        # Only show chart if one section is selected and an item is selected
+        if len(selected_sections) == 1 and selected_item_key:
+            section = selected_sections[0]
+            line_items, _ = get_line_items_by_section(df, contractor_map)
+            if section in line_items and selected_item_key in line_items[section]:
+                unit_prices = line_items[section][selected_item_key]
                 fig2, ax2 = plt.subplots(figsize=(12, 6))
-
                 contractors = list(unit_prices.keys())
                 prices = [unit_prices[c] for c in contractors]
-
                 plt.bar(contractors, prices)
                 plt.xticks(rotation=45, ha="right")
                 plt.ylabel("Unit Price ($)")
-                plt.title(f"Unit Prices for {selected_item}\nin {selected_section}")
-
+                plt.title(f"Unit Prices for {selected_display_item}\nin {section}")
                 # Add value labels on top of each bar
                 for i, price in enumerate(prices):
                     plt.text(i, price, f"${price:,.2f}", ha="center", va="bottom")
-
                 st.pyplot(fig2)
+            else:
+                st.info("No unit price data for selected item and section.")
+        else:
+            st.info(
+                "Please select exactly one section and an item in the sidebar to view line item analysis."
+            )
 
         # --- SECTION BREAKDOWN TABLE ---
         if len(selected_contractors) == 1:

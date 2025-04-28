@@ -2,23 +2,29 @@ import pandas as pd
 import streamlit as st
 
 
-def load_bid_data():
+def load_bid_data(filename="BidWorksheet.csv"):
     """
-    Loads the bid data, dynamically detects contractors and sections, validates numeric fields,
+    Loads the bid data from the given filename, dynamically detects contractors and sections, validates numeric fields,
     and collects parse errors. Returns (df, contractor_map, section_list, parse_errors).
     contractor_map: dict of contractor name -> dict with 'unit_price_col' and 'extension_col'.
     section_list: list of all unique section titles.
     parse_errors: list of error messages encountered during parsing.
     """
     try:
-        with open("BidWorksheet.csv", "r", encoding="utf-8-sig") as f:
+        with open(filename, "r", encoding="utf-8-sig") as f:
             lines = f.readlines()
-        # Always use row 6 (index 5) for contractor names
         contractor_row_index = 5
         header_index = 6
         if len(lines) <= header_index:
-            st.error("CSV file is missing required header rows.")
-            st.stop()
+            st.error(
+                f"CSV file '{filename}' does not have enough rows to read contractor/header info (needs at least {header_index + 1}, found {len(lines)}). Please check the file format."
+            )
+            return (
+                None,
+                None,
+                None,
+                [f"File '{filename}' missing required header rows."],
+            )
         import csv
 
         # Use csv.reader to properly parse quoted names with commas
@@ -26,6 +32,9 @@ def load_bid_data():
             csv.reader([lines[contractor_row_index]], skipinitialspace=True)
         )
         header_row = next(csv.reader([lines[header_index]], skipinitialspace=True))
+        # Pad contractor_row to match header_row length
+        if len(contractor_row) < len(header_row):
+            contractor_row += [""] * (len(header_row) - len(contractor_row))
         # print("[DEBUG] header_row:", header_row)
         # print("[DEBUG] contractor_row:", contractor_row)
         # Map each contractor to their Unit Price and Extension columns
@@ -37,16 +46,23 @@ def load_bid_data():
                     if contractor not in contractor_map:
                         contractor_map[contractor] = {}
                     contractor_map[contractor]["unit_price_col"] = idx
+                    contractor_map[contractor]["unit_price_col_name"] = header_row[idx]
                     # Only assign quantity_col if idx-1 >= 0
                     if idx - 1 >= 0:
                         contractor_map[contractor]["quantity_col"] = idx - 1
-                    # Only assign extension_col if idx+1 < len(header_row)
+                        contractor_map[contractor]["quantity_col_name"] = header_row[
+                            idx - 1
+                        ]
+                    # Only assign extension_col if idx+1 < len(header_row):
                     if idx + 1 < len(header_row):
                         contractor_map[contractor]["extension_col"] = idx + 1
+                        contractor_map[contractor]["extension_col_name"] = header_row[
+                            idx + 1
+                        ]
         # print("[DEBUG] Contractor Map:", contractor_map)
         # Read the CSV as DataFrame
         df = pd.read_csv(
-            "BidWorksheet.csv",
+            filename,
             skiprows=header_index,
             thousands=",",
             encoding="utf-8-sig",
@@ -66,15 +82,12 @@ def load_bid_data():
         # Validate numeric columns and collect errors
         parse_errors = []
         for idx, row in df.iterrows():
-            # Validate Quantity, Unit Price, and Extension for each contractor using new mapping
             for contractor, cols in contractor_map.items():
-                # Quantity: one row down, one column to the left
-                quantity_col = cols.get("quantity_col")
-                if quantity_col is None or idx + 1 >= len(df):
-                    # print(f"[DEBUG] Skipping contractor '{contractor}' at row {idx+1}: quantity_col index invalid ({quantity_col}) or row out of bounds.")
-                    continue
-                else:
-                    quantity_value = df.iloc[idx + 1, quantity_col]
+                # Defensive: use header names if present and check bounds
+                # Quantity
+                quantity_col_name = cols.get("quantity_col_name")
+                if quantity_col_name in df.columns and idx + 1 < len(df):
+                    quantity_value = df.iloc[idx + 1][quantity_col_name]
                     if pd.notna(quantity_value) and str(quantity_value).strip() != "":
                         try:
                             float(str(quantity_value).replace("$", "").replace(",", ""))
@@ -82,13 +95,10 @@ def load_bid_data():
                             parse_errors.append(
                                 f"Row {idx + 2}: Contractor '{contractor}' quantity value '{quantity_value}' is not numeric."
                             )
-                # Unit Price: one row down, same column
-                unit_price_col = cols.get("unit_price_col")
-                if unit_price_col is None or idx + 1 >= len(df):
-                    # print(f"[DEBUG] Skipping contractor '{contractor}' at row {idx+1}: unit_price_col index invalid ({unit_price_col}) or row out of bounds.")
-                    continue
-                else:
-                    unit_price_value = df.iloc[idx + 1, unit_price_col]
+                # Unit Price
+                unit_price_col_name = cols.get("unit_price_col_name")
+                if unit_price_col_name in df.columns and idx + 1 < len(df):
+                    unit_price_value = df.iloc[idx + 1][unit_price_col_name]
                     if (
                         pd.notna(unit_price_value)
                         and str(unit_price_value).strip() != ""
@@ -101,14 +111,10 @@ def load_bid_data():
                             parse_errors.append(
                                 f"Row {idx + 2}: Contractor '{contractor}' unit price value '{unit_price_value}' is not numeric."
                             )
-                # Extension: one row down, one column to the right
-                extension_col = cols.get("extension_col")
-                if extension_col is None or idx + 1 >= len(df):
-                    print(
-                        f"[DEBUG] Skipping contractor '{contractor}' at row {idx + 1}: extension_col index invalid ({extension_col}) or row out of bounds."
-                    )
-                else:
-                    extension_value = df.iloc[idx + 1, extension_col]
+                # Extension
+                extension_col_name = cols.get("extension_col_name")
+                if extension_col_name in df.columns and idx + 1 < len(df):
+                    extension_value = df.iloc[idx + 1][extension_col_name]
                     if pd.notna(extension_value) and str(extension_value).strip() != "":
                         try:
                             float(
@@ -291,18 +297,34 @@ def get_comparison_table(section_totals, selected_sections):
 
 
 def get_line_items_by_section(df, contractor_map):
-    """Group line items by section with their unit prices."""
+    """Group line items by section with their unit prices.
+    Returns two dicts:
+      - line_items[section][unique_key] = unit_prices
+      - display_map[section][display_name] = unique_key
+    """
     line_items = {}
+    display_map = {}
     sections = df["Section"].unique()
     for section in sections:
         if pd.isna(section):
             continue
         section_df = df[df["Section"] == section]
         items = {}
+        display_names = {}
+        # Count occurrences for duplicate display names
+        desc_counts = section_df["Item Description"].value_counts()
         for _, row in section_df.iterrows():
             if pd.isna(row["Item Description"]):
                 continue
-            item_name = f"{row['Item Description']} (Line {row['Line Item']})"
+            desc = str(row["Item Description"]).strip()
+            line = str(row["Line Item"]).strip()
+            # Unique key always includes line number
+            unique_key = f"{desc} (Line {line})"
+            # If duplicate descriptions, append line number to display name
+            if desc_counts.get(desc, 0) > 1:
+                display_name = f"{desc} [Line {line}]"
+            else:
+                display_name = desc
             unit_prices = {}
             for contractor, cols in contractor_map.items():
                 unit_col_idx = cols.get("unit_price_col")
@@ -318,7 +340,9 @@ def get_line_items_by_section(df, contractor_map):
                         except Exception:
                             continue
             if unit_prices:
-                items[item_name] = unit_prices
+                items[unique_key] = unit_prices
+                display_names[display_name] = unique_key
         if items:
             line_items[section] = items
-    return line_items
+            display_map[section] = display_names
+    return line_items, display_map
