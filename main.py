@@ -5,9 +5,14 @@ import numpy as np
 from logic import load_bid_data, get_section_totals, get_line_items_by_section
 
 
-
 def main():
-    st.set_page_config(page_title="Bid Compare", page_icon=None, layout="centered", initial_sidebar_state="auto", menu_items=None)
+    st.set_page_config(
+        page_title="Bid Compare",
+        page_icon=None,
+        layout="wide",
+        initial_sidebar_state="auto",
+        menu_items=None,
+    )
     st.title("Bid Analysis Dashboard")
 
     try:
@@ -15,7 +20,7 @@ def main():
         section_totals = get_section_totals(df, contractor_map, section_list)
 
         if parse_errors:
-            st.warning('Some data issues were detected:')
+            st.warning("Some data issues were detected:")
             for err in parse_errors:
                 st.text(err)
 
@@ -23,24 +28,43 @@ def main():
         st.sidebar.header("Filters")
         contractor_options = list(contractor_map.keys())
         section_options = section_list
-        selected_contractors = st.sidebar.multiselect("Contractors", contractor_options, default=contractor_options)
-        selected_sections = st.sidebar.multiselect("Sections", section_options, default=section_options)
+        selected_contractors = st.sidebar.multiselect(
+            "Contractors", contractor_options, default=contractor_options
+        )
+        selected_sections = st.sidebar.multiselect(
+            "Sections", section_options, default=section_options
+        )
 
         # Get all line items for item filter
         line_items_all = get_line_items_by_section(df, contractor_map)
-        all_items = sorted({item for sec in selected_sections for item in line_items_all.get(sec, {})})
-        selected_item = st.sidebar.selectbox("Line Item (for Unit Price Chart)", [None] + all_items)
+        all_items = sorted(
+            {item for sec in selected_sections for item in line_items_all.get(sec, {})}
+        )
+        selected_item = st.sidebar.selectbox(
+            "Line Item (for Unit Price Chart)", [None] + all_items
+        )
 
         # --- MAIN LAYOUT ---
         st.header("Section Totals Comparison by Contractor")
         from logic import get_section_totals_df
-        section_totals_df = get_section_totals_df(df, contractor_map, section_list, selected_contractors)
-        section_totals_df = section_totals_df.loc[section_totals_df.index.isin(selected_sections)]
+
+        section_totals_df = get_section_totals_df(
+            df, contractor_map, section_list, selected_contractors
+        )
+        section_totals_df = section_totals_df.loc[
+            section_totals_df.index.isin(selected_sections)
+        ]
         # Only use contractors present in the DataFrame columns
-        present_contractors = [c for c in selected_contractors if c in section_totals_df.columns]
-        missing_contractors = [c for c in selected_contractors if c not in section_totals_df.columns]
+        present_contractors = [
+            c for c in selected_contractors if c in section_totals_df.columns
+        ]
+        missing_contractors = [
+            c for c in selected_contractors if c not in section_totals_df.columns
+        ]
         if missing_contractors:
-            st.warning(f"No data for these contractor(s): {', '.join(missing_contractors)}")
+            st.warning(
+                f"No data for these contractor(s): {', '.join(missing_contractors)}"
+            )
         if present_contractors and not section_totals_df.empty:
             fig, ax = plt.subplots(figsize=(15, 8))
             bar_width = 0.8 / max(1, len(present_contractors))
@@ -50,42 +74,29 @@ def main():
                 positions = x + idx * bar_width
                 plt.bar(positions, values, bar_width, label=contractor, alpha=0.8)
                 for i, v in enumerate(values):
-                    plt.text(positions[i], v, f"${v:,.0f}", ha="center", va="bottom", rotation=45, fontsize=8)
+                    plt.text(
+                        positions[i],
+                        v,
+                        f"${v:,.0f}",
+                        ha="center",
+                        va="bottom",
+                        rotation=45,
+                        fontsize=8,
+                    )
             plt.xlabel("Sections")
             plt.ylabel("Bid Amount ($)")
             plt.title("Section Totals by Contractor")
-            plt.xticks(x + bar_width * (len(present_contractors)-1)/2, section_totals_df.index, rotation=45, ha="right")
+            plt.xticks(
+                x + bar_width * (len(present_contractors) - 1) / 2,
+                section_totals_df.index,
+                rotation=45,
+                ha="right",
+            )
             plt.legend()
             plt.tight_layout()
             st.pyplot(fig)
         else:
             st.info("No data for selected filters.")
-
-        # --- SECTION BREAKDOWN TABLE ---
-        st.header("Section Breakdown Table")
-        for section in selected_sections:
-            st.subheader(f"Section: {section}")
-            section_df = df[df["Section"] == section]
-            if section_df.empty:
-                st.write("No items in this section.")
-                continue
-            table_data = []
-            for _, row in section_df.iterrows():
-                item = row["Item Description"]
-                line = row["Line Item"]
-                qty = row["Quantity"]
-                row_dict = {"Line": line, "Item": item, "Quantity": qty}
-                for contractor, cols in contractor_map.items():
-                    if contractor not in selected_contractors:
-                        continue
-                    unit_col = cols.get('unit_price_col')
-                    ext_col = cols.get('extension_col')
-                    unit_val = row.iloc[unit_col] if unit_col is not None and unit_col < len(row) else None
-                    ext_val = row.iloc[ext_col] if ext_col is not None and ext_col < len(row) else None
-                    row_dict[f"{contractor} Unit"] = unit_val
-                    row_dict[f"{contractor} Ext"] = ext_val
-                table_data.append(row_dict)
-            st.dataframe(pd.DataFrame(table_data))
 
         # --- UNIT PRICE BAR CHART FOR SELECTED ITEM ---
         if selected_item:
@@ -96,16 +107,23 @@ def main():
                 if selected_item in items:
                     for contractor, price in items[selected_item].items():
                         if contractor in selected_contractors:
-                            unit_price_data.append({
-                                "Contractor": contractor,
-                                "Section": section,
-                                "Unit Price": price
-                            })
+                            unit_price_data.append(
+                                {
+                                    "Contractor": contractor,
+                                    "Section": section,
+                                    "Unit Price": price,
+                                }
+                            )
             if unit_price_data:
                 unit_df = pd.DataFrame(unit_price_data)
                 fig2, ax2 = plt.subplots(figsize=(10, 5))
                 contractors = unit_df["Contractor"].unique()
-                prices = [unit_df[unit_df["Contractor"] == c]["Unit Price"].iloc[0] if not unit_df[unit_df["Contractor"] == c].empty else 0 for c in contractors]
+                prices = [
+                    unit_df[unit_df["Contractor"] == c]["Unit Price"].iloc[0]
+                    if not unit_df[unit_df["Contractor"] == c].empty
+                    else 0
+                    for c in contractors
+                ]
                 plt.bar(contractors, prices)
                 plt.xticks(rotation=45, ha="right")
                 plt.ylabel("Unit Price ($)")
@@ -115,30 +133,6 @@ def main():
                 st.pyplot(fig2)
             else:
                 st.info("No unit price data for selected item and filters.")
-
-        # --- CONTRACTOR SUMMARY TABLE ---
-        st.header("Contractor Summary Table")
-        summary_data = []
-        for contractor in selected_contractors:
-            contractor_sections = [totals.get(contractor, 0) for section, totals in section_totals.items() if section in selected_sections]
-            if contractor_sections:
-                summary_data.append({
-                    "Contractor": contractor,
-                    "Total": sum(contractor_sections),
-                    "Min": min(contractor_sections),
-                    "Max": max(contractor_sections),
-                    "Average": sum(contractor_sections)/len(contractor_sections)
-                })
-        if summary_data:
-            summary_df = pd.DataFrame(summary_data)
-            summary_df["Total"] = summary_df["Total"].map(lambda x: f"${x:,.2f}")
-            summary_df["Min"] = summary_df["Min"].map(lambda x: f"${x:,.2f}")
-            summary_df["Max"] = summary_df["Max"].map(lambda x: f"${x:,.2f}")
-            summary_df["Average"] = summary_df["Average"].map(lambda x: f"${x:,.2f}")
-            st.dataframe(summary_df.set_index("Contractor"))
-        else:
-            st.info("No summary data for selected filters.")
-
 
         st.header("Comprehensive Bid Comparison")
         # Create a DataFrame with all sections and totals
@@ -235,22 +229,44 @@ def main():
 
                 st.pyplot(fig2)
 
-                # Show prices in a table format
-                # Show item details if available
-                # If you want to display details, uncomment below:
-                # item_details = df[
-                #     (df["Section"] == selected_section)
-                #     & (
-                #         df["Item Description"].str.strip()
-                #         == selected_item.split(" (Line ")[0].strip()
-                #     )
-                # ].iloc[0]
-                # st.subheader("Item Details")
-                # st.write({
-                #     "Item Code": item_details["Item Code"],
-                #     "Unit of Measure": item_details["UofM"],
-                #     "Quantity": item_details["Quantity"],
-                # })
+        # --- SECTION BREAKDOWN TABLE ---
+        if len(selected_contractors) == 1:
+            st.header("Section Breakdown Table")
+            for section in selected_sections:
+                st.subheader(f"Section: {section}")
+                section_df = df[df["Section"] == section]
+                if section_df.empty:
+                    st.write("No items in this section.")
+                    continue
+                table_data = []
+                for _, row in section_df.iterrows():
+                    item = row["Item Description"]
+                    line = row["Line Item"]
+                    qty = row["Quantity"]
+                    row_dict = {"Line": line, "Item": item, "Quantity": qty}
+                    for contractor, cols in contractor_map.items():
+                        if contractor not in selected_contractors:
+                            continue
+                        unit_col = cols.get("unit_price_col")
+                        ext_col = cols.get("extension_col")
+                        unit_val = (
+                            row.iloc[unit_col]
+                            if unit_col is not None and unit_col < len(row)
+                            else None
+                        )
+                        ext_val = (
+                            row.iloc[ext_col]
+                            if ext_col is not None and ext_col < len(row)
+                            else None
+                        )
+                        row_dict[f"{contractor} Unit"] = unit_val
+                        row_dict[f"{contractor} Ext"] = ext_val
+                    table_data.append(row_dict)
+                st.dataframe(pd.DataFrame(table_data))
+        elif len(selected_contractors) > 1:
+            st.info(
+                "Section Breakdown Table is only available when a single contractor is selected."
+            )
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
