@@ -1,9 +1,11 @@
-import streamlit as st
-import pandas as pd
+import re
+
 import matplotlib.pyplot as plt
 import numpy as np
-import re
-from logic import load_bid_data, get_section_totals, get_line_items_by_section
+import pandas as pd
+import streamlit as st
+
+from logic import get_line_items_by_section, get_section_totals, load_bid_data
 
 
 def main():
@@ -17,8 +19,8 @@ def main():
     st.title("Bid Analysis Dashboard")
 
     try:
-        import os
         import csv
+        import os
 
         # Find all CSV files in the root directory
         csv_files = [f for f in os.listdir(".") if f.lower().endswith(".csv")]

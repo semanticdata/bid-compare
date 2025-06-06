@@ -1,7 +1,7 @@
 [project]
 name = "bid-compare"
 version = "0.1.0"
-description = "Add your description here"
+description = "Tool for analyzing and comparing construction bid data from multiple CSVs."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
