@@ -23,3 +23,8 @@ Bid Compare is a Streamlit-based tool for analyzing and comparing construction b
    - CSV files to compare
    - Contractors to analyze
    - Sections to examine
+
+## Ideas
+
+- Input validation of CSV files
+- Add tooltips to explain chart features and calculations
