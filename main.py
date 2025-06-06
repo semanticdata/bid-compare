@@ -1,11 +1,24 @@
-import re
-
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import streamlit as st
 
-from logic import get_line_items_by_section, get_section_totals, load_bid_data
+from data_processing import (
+    calculate_total_bids,
+    calculate_total_bids_by_year,
+    extract_project_info,
+    prepare_section_breakdown,
+)
+from logic import (
+    get_comparison_table,
+    get_line_items_by_section,
+    get_section_totals,
+    load_bid_data,
+)
+from plotting import (
+    plot_section_totals,
+    plot_total_bids_bar_chart,
+    plot_unit_prices,
+    plot_year_over_year_bids,
+)
 
 
 def main():
@@ -19,7 +32,6 @@ def main():
     st.title("Bid Analysis Dashboard")
 
     try:
-        import csv
         import os
 
         # Find all CSV files in the root directory
@@ -33,15 +45,8 @@ def main():
         project_names = {}
         parse_errors_all = []
         for csv_file in selected_csvs:
-            # Extract year from filename (e.g., 2023_MillandOverlay_BidWorksheet.csv -> 2023)
-            match = re.search(r"(20\d{2})", csv_file)
-            year = match.group(1) if match else csv_file
-            with open(csv_file, "r", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                first_row = next(reader)
-                project_name = first_row[0] if first_row else "Unknown Project"
-                project_name = re.sub(r"\s*\([^)]*\)", "", project_name).strip()
-                project_names[year] = project_name
+            year, project_name = extract_project_info(csv_file)
+            project_names[year] = project_name
             df, contractor_map, section_list, parse_errors = load_bid_data(csv_file)
             data_by_year[year] = {
                 "df": df,
@@ -100,124 +105,76 @@ def main():
         # --- YEAR-OVER-YEAR ANALYSIS ---
         if len(selected_csvs) > 1:
             st.header("Year-over-Year Total Bids by Contractor")
-            # Prepare data
-            total_bids_by_year = {}
-            all_contractors = set()
-            for year, d in data_by_year.items():
-                section_totals = d["section_totals"]
-                # Sum all section totals for each contractor
-                total_by_contractor = {}
-                for section, subtotals in section_totals.items():
-                    for contractor, val in subtotals.items():
-                        total_by_contractor[contractor] = (
-                            total_by_contractor.get(contractor, 0) + val
-                        )
-                total_bids_by_year[year] = total_by_contractor
-                all_contractors.update(total_by_contractor.keys())
-            all_contractors = sorted(all_contractors)
-            years = sorted(total_bids_by_year.keys())
-            fig, ax = plt.subplots(figsize=(12, 6))
-            for contractor in all_contractors:
-                yvals = [total_bids_by_year[y].get(contractor, 0) for y in years]
-                ax.plot(years, yvals, marker="o", label=contractor)
-                for i, v in enumerate(yvals):
-                    ax.text(
-                        years[i], v, f"${v:,.0f}", ha="center", va="bottom", fontsize=8
-                    )
-            ax.set_xlabel("Year")
-            ax.set_ylabel("Total Bid ($)")
-            ax.set_title("Total Bids by Contractor (Year-over-Year)")
-            ax.legend()
+            total_bids_by_year_data, all_contractors_list = (
+                calculate_total_bids_by_year(data_by_year)
+            )
+            years_list = sorted(total_bids_by_year_data.keys())
+            fig = plot_year_over_year_bids(
+                total_bids_by_year_data, all_contractors_list, years_list
+            )
             st.pyplot(fig)
             st.markdown("---")
         # Existing single-file analysis continues below
         # st.header("Section Totals Comparison by Contractor")
 
-        from logic import prepare_section_totals_chart_data
+        # Prepare data for section totals chart
+        _section_totals = data_by_year[latest_year]["section_totals"]
+        section_totals_df = pd.DataFrame(
+            _section_totals
+        ).T  # .T might be needed depending on structure
 
-        section_totals_df, present_contractors, missing_contractors = (
-            prepare_section_totals_chart_data(
-                df,
-                contractor_map,
-                section_list,
-                selected_contractors,
-                selected_sections,
+        # Filter contractors that exist in the DataFrame
+        available_contractors = [
+            c for c in selected_contractors if c in section_totals_df.columns
+        ]
+
+        if not section_totals_df.empty and available_contractors:
+            section_totals_df = section_totals_df.loc[
+                section_totals_df.index.isin(selected_sections), available_contractors
+            ]
+        else:
+            section_totals_df = pd.DataFrame(
+                index=selected_sections, columns=available_contractors
             )
-        )
+
+        present_contractors = [
+            c
+            for c in selected_contractors
+            if c in section_totals_df.columns
+            and not section_totals_df[c].isnull().all()
+        ]
+        missing_contractors = [
+            c for c in selected_contractors if c not in present_contractors
+        ]
+        section_totals_df = section_totals_df[
+            present_contractors
+        ]  # Keep only present contractors
         if missing_contractors:
             st.warning(
                 f"No data for these contractor(s): {', '.join(missing_contractors)}"
             )
         if present_contractors and not section_totals_df.empty:
-            fig, ax = plt.subplots(figsize=(15, 8))
-            bar_width = 0.8 / max(1, len(present_contractors))
-            x = np.arange(len(section_totals_df.index))
-            cmap = plt.colormaps["tab10"]
-            contractor_colors = {
-                contractor: cmap(idx % 10)
-                for idx, contractor in enumerate(present_contractors)
-            }
-            for idx, contractor in enumerate(present_contractors):
-                values = section_totals_df[contractor].fillna(0).values
-                positions = x + idx * bar_width
-                plt.bar(
-                    positions,
-                    values,
-                    bar_width,
-                    label=contractor,
-                    alpha=0.8,
-                    color=contractor_colors[contractor],
-                )
-                for i, v in enumerate(values):
-                    plt.text(
-                        positions[i],
-                        v,
-                        f"${v:,.0f}",
-                        ha="center",
-                        va="bottom",
-                        rotation=45,
-                        fontsize=8,
-                    )
-            plt.xlabel("Sections")
-            plt.ylabel("Bid Amount ($)")
-            plt.title("Section Totals by Contractor")
-            plt.xticks(
-                x + bar_width * (len(present_contractors) - 1) / 2,
-                section_totals_df.index,
-                rotation=45,
-                ha="right",
+            fig, contractor_colors = plot_section_totals(
+                section_totals_df, present_contractors
             )
-            plt.legend()
-            plt.tight_layout()
             st.pyplot(fig)
 
             # --- TOTAL BIDS BAR CHART ---
             # st.header("Calculated Total Bids by Contractor")
-            # Calculate total bid for each present contractor
-            total_bids = {}
-            for contractor in present_contractors:
-                total_bids[contractor] = section_totals_df[contractor].fillna(0).sum()
-            fig_total, ax_total = plt.subplots(figsize=(8, 5))
-            contractors_list = list(total_bids.keys())
-            totals_list = [total_bids[c] for c in contractors_list]
-            total_colors = [
-                contractor_colors.get(c, "skyblue") for c in contractors_list
-            ]
-            plt.bar(contractors_list, totals_list, color=total_colors, alpha=0.85)
-            plt.ylabel("Total Bid ($)")
-            plt.title("Calculated Total Bids by Contractor")
-            plt.xticks(rotation=45, ha="right")
-            for i, v in enumerate(totals_list):
-                plt.text(i, v, f"${v:,.0f}", ha="center", va="bottom")
-            plt.tight_layout()
+            total_bids_calculated = calculate_total_bids(
+                section_totals_df, present_contractors
+            )
+            fig_total = plot_total_bids_bar_chart(
+                total_bids_calculated, contractor_colors
+            )
             st.pyplot(fig_total)
         else:
             st.info("No data for selected filters.")
 
         st.header("Comprehensive Bid Comparison")
-        from logic import get_comparison_table
-
-        comparison_df = get_comparison_table(section_totals, selected_sections)
+        comparison_df = get_comparison_table(
+            section_totals, selected_sections
+        )  # section_totals here is for the latest_year
         if not comparison_df.empty:
             st.dataframe(comparison_df)
         else:
@@ -244,18 +201,22 @@ def main():
             section = selected_sections[0]
             line_items, _ = get_line_items_by_section(df, contractor_map)
             if section in line_items and selected_item_key in line_items[section]:
-                unit_prices = line_items[section][selected_item_key]
-                fig2, ax2 = plt.subplots(figsize=(12, 6))
-                contractors = list(unit_prices.keys())
-                prices = [unit_prices[c] for c in contractors]
-                plt.bar(contractors, prices)
-                plt.xticks(rotation=45, ha="right")
-                plt.ylabel("Unit Price ($)")
-                plt.title(f"Unit Prices for {selected_display_item}\nin {section}")
-                # Add value labels on top of each bar
-                for i, price in enumerate(prices):
-                    plt.text(i, price, f"${price:,.2f}", ha="center", va="bottom")
-                st.pyplot(fig2)
+                unit_prices_data = line_items[section][selected_item_key]
+                # Filter unit_prices_data for selected_contractors
+                unit_prices_filtered = {
+                    c: p
+                    for c, p in unit_prices_data.items()
+                    if c in selected_contractors
+                }
+                if unit_prices_filtered:
+                    fig_unit_price = plot_unit_prices(
+                        unit_prices_filtered, selected_display_item, section
+                    )
+                    st.pyplot(fig_unit_price)
+                else:
+                    st.info(
+                        f"No unit price data for selected contractors in {selected_display_item} for section {section}."
+                    )
             else:
                 st.info("No unit price data for selected item and section.")
         else:
@@ -272,31 +233,13 @@ def main():
                 if section_df.empty:
                     st.write("No items in this section.")
                     continue
-                table_data = []
-                for _, row in section_df.iterrows():
-                    item = row["Item Description"]
-                    line = row["Line Item"]
-                    qty = row["Quantity"]
-                    row_dict = {"Line": line, "Item": item, "Quantity": qty}
-                    for contractor, cols in contractor_map.items():
-                        if contractor not in selected_contractors:
-                            continue
-                        unit_col = cols.get("unit_price_col")
-                        ext_col = cols.get("extension_col")
-                        unit_val = (
-                            row.iloc[unit_col]
-                            if unit_col is not None and unit_col < len(row)
-                            else None
-                        )
-                        ext_val = (
-                            row.iloc[ext_col]
-                            if ext_col is not None and ext_col < len(row)
-                            else None
-                        )
-                        row_dict[f"{contractor} Unit"] = unit_val
-                        row_dict[f"{contractor} Ext"] = ext_val
-                    table_data.append(row_dict)
-                st.dataframe(pd.DataFrame(table_data))
+                section_breakdown_df = prepare_section_breakdown(
+                    df, section, contractor_map, selected_contractors
+                )
+                if section_breakdown_df is not None:
+                    st.dataframe(section_breakdown_df)
+                else:
+                    st.write("No items in this section or for the selected contractor.")
         elif len(selected_contractors) > 1:
             st.info(
                 "Section Breakdown Table is only available when a single contractor is selected."
